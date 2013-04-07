@@ -1,0 +1,136 @@
+#!/usr/bin/python
+
+import markdown,re,base64,os,sys
+import simplejson as json
+import argparse
+from pylab import *
+
+tex_start = r"""
+\documentclass{article}
+\usepackage{graphicx}
+\parindent0ex
+\parsep1ex
+\parskip1ex
+\begin{document}
+"""
+
+tex_end = r"""
+\end{document}
+"""
+
+def makelist(text):
+    result = "\\begin{itemize}\n"
+    result += re.sub(r"^\s*-\s+(.*)\n(?m)","\\item \\1\n",text)
+    result += "\\end{itemize}\n"
+    return result
+
+def convert_markdown_to_tex(cell):
+    assert cell["cell_type"]=="markdown"
+    source = cell["source"]
+    source = [re.sub("\n$","",s) for s in source]
+    source = "\n".join(source)
+    # itemization
+    source = re.sub(r"\n(\s*-\s+.*\n)+",lambda g:makelist(g.group(0)),source)
+    # replace top level math
+    source = re.sub(r"^\s*\$([^$]+)\$\s*(([(].*?[)])?)\s*$(?m)","$$\\1$$ \\2\n",source)
+    # section headings
+    source = re.sub(r"(.*)\n+====*","\\section{\\1}\n",source)
+    source = re.sub(r"(.*)\n+----*","\\subsection{\\1}\n",source)
+    # paragraphs
+    source = re.sub(r"\n\n+","\n\\par\n",source)
+    source = re.split(r"(\$\$[^$]+?\$\$|\$[^$]+?\$)",source)
+    for i in range(0,len(source),2):
+        source[i] = re.sub(r"\*(.*?)\*","{\\\\bf \\1}",source[i])
+        source[i] = re.sub(r"_(.*?)_","{\\\\it \\1}",source[i])
+        source[i] = re.sub(r'`(.*?)`',"\verb|\\1|",source[i])
+        source[i] = re.sub(r'"(.*?)"',"``\\1''",source[i])
+    source = " ".join(source)
+    return "\n"+source+"\n"
+
+def convert_code_to_tex(cell):
+    assert cell["cell_type"]=="code"
+    assert cell["language"]=="python"
+    outputs = cell["outputs"]
+    result = "\n"
+    result += "\\begingroup\\fontsize{8pt}{10pt}\\selectfont\n"
+    result += "\\begin{verbatim}\n"
+    code = [re.sub("\n","",c) for c in cell["input"]]
+    code = "\n".join(["    "+s for s in code])
+    if "#hide" in code: result += "    (hidden)"
+    else: result += code
+    result += "\n\\end{verbatim}\n"
+    result += "\\endgroup\n"
+    for j,out in enumerate(outputs):
+        if out["output_type"]=="display_data":
+            result += "\n\\begin{center}\n"
+            result += "%% image %s_%d\n"%(cell["prompt_number"],j)
+            png = base64.standard_b64decode(out["png"])
+            png_name = image_prefix+"%s_%s.png"%(cell["prompt_number"],j)
+            with open(png_name,"wb") as stream: stream.write(png)
+            image = imread(png_name)
+            h,w = image.shape[:2]
+            th,tw = 1.5,4.0
+            if h/th>w/tw:
+                result += "    \\includegraphics[height=%fin]{%s}\n"%(th,png_name)
+            else:
+                result += "    \\includegraphics[width=%fin]{%s}\n"%(tw,png_name)
+            result += "\\end{center}\n"
+        elif out["output_type"]=="stream":
+            result += "\n\\begin{verbatim}\n"
+            result += "\n".join(["    "+s for s in out["text"]])
+            result += "\n\\end{verbatim}\n"
+        elif out["output_type"]=="pyout":
+            result += "\n\\begin{verbatim}\n"
+            result += "\n".join(["    "+s for s in out["text"]])
+            result += "\n\\end{verbatim}\n"
+        else:
+            result += "\n\\begin{verbatim}\n"
+            result += "\n    UNKNOWN OUTPUT %s\n"%(out["output_type"],)
+            result += "\n\\end{verbatim}\n"
+        result += "\n"
+    return result
+
+def convert_all(cells):
+    results = []
+    for cell in cells:
+        if cell["cell_type"]=="markdown":
+            result = convert_markdown_to_tex(cell)
+        elif cell["cell_type"]=="code":
+            result = convert_code_to_tex(cell)
+        else:
+            result += "\n\\begin{verbatim}\n"
+            result = "    UNKNOWN CELL "+repr(cell)
+            result += "\n\\end{verbatim}\n"
+        results.append(result)
+    return results
+
+parser = argparse.ArgumentParser("apply an RNN recognizer")
+parser.add_argument("--noheader","-n",action="store_true")
+parser.add_argument("--output","-o","--output",default=None)
+parser.add_argument("--figs","-F",default="_figs")
+parser.add_argument("--prefix","-p",default=None)
+parser.add_argument("input",nargs=1)
+args = parser.parse_args()
+fname = args.input[0]
+
+os.system("mkdir '%s' || true"%args.figs)
+
+if args.prefix is None:
+    s = re.sub(r"\.ipynb$","",fname)
+    s = re.sub(r'[^a-zA-Z0-9]+',"_",s)
+    args.prefix = s+"_"
+image_prefix = args.figs + "/" + args.prefix + "_"
+
+with open(fname) as stream: 
+    nb = json.load(stream)
+
+cells = nb["worksheets"][0]["cells"]
+results = convert_all(cells)
+stream = sys.stdout
+if args.output is not None: stream = open(args.output,"w")
+
+if not args.noheader: print tex_start
+for result in results: stream.write(result)
+if not args.noheader: print tex_end
+
+if stream!=sys.stdout: stream.close()
