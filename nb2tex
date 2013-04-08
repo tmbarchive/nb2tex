@@ -79,6 +79,7 @@ def convert_markdown_to_tex(cell):
         global title,author
         _,title = re.split(r'\s+',source[0],1)
         _,author = re.split(r'\s+',source[1],1)
+        return ""
     if source[0].strip()=="": return ""
     m = re.match(r'^\s*\((.*)\)\s*$',source[0])
     if m: 
@@ -86,7 +87,6 @@ def convert_markdown_to_tex(cell):
         source = source[1:]
     else:
         ftitle = None
-    if ftitle is None and beamer: return ""
     source = "\n".join(source)+"\n"
     # itemization
     source = re.sub(r"\n(\s*-\s+.*\n)+",lambda g:makelist(g.group(0)),source)
