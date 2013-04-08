@@ -5,9 +5,36 @@ import simplejson as json
 import argparse
 from pylab import *
 
+listings = r"""
+\usepackage{listings}
+\usepackage{color}
+\definecolor{mylight}{rgb}{0.9,0.9,0.9}
+\definecolor{mygreen}{rgb}{0,0.6,0}
+\definecolor{myblue}{rgb}{0,0,0.6}
+\definecolor{mygray}{rgb}{0.6,0.6,0.6}
+\definecolor{myviolet}{rgb}{0.6,0,0.6}
+\lstset{ %
+backgroundcolor=\color{mylight}, %
+basicstyle=\ttfamily\fontsize{8pt}{8pt}, %
+breakatwhitespace=false, %
+breaklines=true, %
+captionpos=b, %
+commentstyle=\color{mygreen}, %
+frame=single, %
+keywordstyle=\color{myblue}, %
+language=Python, %
+numbers=left, %
+numbersep=5pt, %
+numberstyle=\tiny\color{mygray}, %
+showspaces=false, %
+tabsize=2, %
+stringstyle=\color{myviolet} %
+}
+"""
+
 tex_start = r"""
 \documentclass{article}
-\usepackage{graphicx}
+\usepackage{graphicx}"""+listings+r"""
 \parindent0ex
 \parsep1ex
 \parskip1ex
@@ -18,76 +45,117 @@ tex_end = r"""
 \end{document}
 """
 
+beamer = 0
+
+beamer_start = r"""
+\documentclass{beamer}
+\usepackage{graphicx}"""+listings+r"""
+\useoutertheme{infolines}
+\usetheme{default}
+\parindent0ex
+\parsep1ex
+\parskip1ex
+\begin{document}
+"""
+
+beamer_end = r"""
+\end{document}
+"""
+
 def makelist(text):
     result = "\\begin{itemize}\n"
     result += re.sub(r"^\s*-\s+(.*)\n(?m)","\\item \\1\n",text)
     result += "\\end{itemize}\n"
     return result
 
+title = ""
+author = ""
+
 def convert_markdown_to_tex(cell):
     assert cell["cell_type"]=="markdown"
     source = cell["source"]
     source = [re.sub("\n$","",s) for s in source]
-    source = "\n".join(source)
+    if source[0].strip().startswith("Title:"):
+        global title,author
+        _,title = re.split(r'\s+',source[0],1)
+        _,author = re.split(r'\s+',source[1],1)
+    if source[0].strip()=="": return ""
+    m = re.match(r'^\s*\((.*)\)\s*$',source[0])
+    if m: 
+        ftitle = m.group(1)
+        source = source[1:]
+    else:
+        ftitle = None
+    if ftitle is None and beamer: return ""
+    source = "\n".join(source)+"\n"
     # itemization
     source = re.sub(r"\n(\s*-\s+.*\n)+",lambda g:makelist(g.group(0)),source)
     # replace top level math
-    source = re.sub(r"^\s*\$([^$]+)\$\s*(([(].*?[)])?)\s*$(?m)","$$\\1$$ \\2\n",source)
+    source = re.sub(r"^\s*\$([^$]+)\$\s*$(?m)",r"\\begin{equation}\1\\end{equation}"+"\n",source)
     # section headings
     source = re.sub(r"(.*)\n+====*","\\section{\\1}\n",source)
     source = re.sub(r"(.*)\n+----*","\\subsection{\\1}\n",source)
     # paragraphs
     source = re.sub(r"\n\n+","\n\\par\n",source)
-    source = re.split(r"(\$\$[^$]+?\$\$|\$[^$]+?\$)",source)
+    source = re.split(r"(\$\$[^$]+?\$\$|\$[^$]+?\$|\\begin{equation}.*?\\end{equation})(?s)",source)
     for i in range(0,len(source),2):
         source[i] = re.sub(r"\*(.*?)\*","{\\\\bf \\1}",source[i])
         source[i] = re.sub(r"_(.*?)_","{\\\\it \\1}",source[i])
-        source[i] = re.sub(r'`(.*?)`',"\verb|\\1|",source[i])
+        source[i] = re.sub(r'`(.*?)`',"\\\\verb|\\1|",source[i])
         source[i] = re.sub(r'"(.*?)"',"``\\1''",source[i])
     source = " ".join(source)
-    return "\n"+source+"\n"
+    if beamer and ftitle is not None and ftitle!="":
+        return "\n\\frametitle{%s}\n%s\n"%(ftitle,source)
+    else:
+        return "\n%s\n"%(source,)
 
 def convert_code_to_tex(cell):
     assert cell["cell_type"]=="code"
     assert cell["language"]=="python"
-    outputs = cell["outputs"]
+    code = cell["input"]
+    if len(code)<1: return ""
+    if code[0].strip()=="": return ""
+    m = re.match(r'^#\s*(.*)\s*$',code[0])
+    if m: 
+        ftitle = m.group(1)
+        code = code[1:]
+    else:
+        ftitle = None
+    code = [re.sub("\n","",c) for c in code]
+    code = "\n".join(code)
     result = "\n"
-    result += "\\begingroup\\fontsize{8pt}{10pt}\\selectfont\n"
-    result += "\\begin{verbatim}\n"
-    code = [re.sub("\n","",c) for c in cell["input"]]
-    code = "\n".join(["    "+s for s in code])
-    if "#hide" in code: result += "    (hidden)"
-    else: result += code
+    if ftitle is not None and beamer: result += "\\frametitle{%s}\n"%(ftitle,)
+    result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
+    result += "\n\\par\\vskip1ex\n\\begin{lstlisting}\n"
+    result += code
+    result += "\n\\end{lstlisting}\n\\par\n"
+    result += "\\endgroup\n"
+    stdout = ["".join(s["text"]) for s in cell["outputs"] if s.get("stream")=="stdout"]
+    stdout = "".join(stdout)
+    stdout = re.split(r'\n',stdout)
+    if len(stdout)>10:
+        stdout = stdout[:5]+"..."+stdout[-5:]
+    stdout = "\n".join(stdout)
+    result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
+    result += "\n\\begin{verbatim}\n"
+    result += stdout+"\n"
     result += "\n\\end{verbatim}\n"
     result += "\\endgroup\n"
-    for j,out in enumerate(outputs):
-        if out["output_type"]=="display_data":
-            result += "\n\\begin{center}\n"
-            result += "%% image %s_%d\n"%(cell["prompt_number"],j)
-            png = base64.standard_b64decode(out["png"])
-            png_name = image_prefix+"%s_%s.png"%(cell["prompt_number"],j)
-            with open(png_name,"wb") as stream: stream.write(png)
-            image = imread(png_name)
-            h,w = image.shape[:2]
-            th,tw = 1.5,4.0
-            if h/th>w/tw:
-                result += "    \\includegraphics[height=%fin]{%s}\n"%(th,png_name)
-            else:
-                result += "    \\includegraphics[width=%fin]{%s}\n"%(tw,png_name)
-            result += "\\end{center}\n"
-        elif out["output_type"]=="stream":
-            result += "\n\\begin{verbatim}\n"
-            result += "\n".join(["    "+s for s in out["text"]])
-            result += "\n\\end{verbatim}\n"
-        elif out["output_type"]=="pyout":
-            result += "\n\\begin{verbatim}\n"
-            result += "\n".join(["    "+s for s in out["text"]])
-            result += "\n\\end{verbatim}\n"
+    pngs = [s for s in cell["outputs"] if s["output_type"]=="display_data"]
+    for j,out in enumerate(pngs):
+        result += "\n\\begin{center}\n"
+        result += "%% image %s_%d\n"%(cell["prompt_number"],j)
+        png = base64.standard_b64decode(out["png"])
+        png_name = image_prefix+"%03d_%02d.png"%(int(cell["prompt_number"]),int(j))
+        with open(png_name,"wb") as stream: stream.write(png)
+        image = imread(png_name)
+        h,w = image.shape[:2]
+        th,tw = 1.5,4.0
+        if h/th>w/tw:
+            result += "    \\includegraphics[height=%fin]{%s}\n"%(th,png_name)
         else:
-            result += "\n\\begin{verbatim}\n"
-            result += "\n    UNKNOWN OUTPUT %s\n"%(out["output_type"],)
-            result += "\n\\end{verbatim}\n"
-        result += "\n"
+            result += "    \\includegraphics[width=%fin]{%s}\n"%(tw,png_name)
+        result += "\\end{center}\n"
     return result
 
 def convert_all(cells):
@@ -97,40 +165,102 @@ def convert_all(cells):
             result = convert_markdown_to_tex(cell)
         elif cell["cell_type"]=="code":
             result = convert_code_to_tex(cell)
+        elif cell["cell_type"]=="heading":
+            if cell["level"]>=3:
+                result = "\n\\subsubsection{%s}\n\n"%("\n".join(cell["source"]))
+            elif cell["level"]==2:
+                result = "\n\\subsection{%s}\n\n"%("\n".join(cell["source"]))
+            elif cell["level"]==1:
+                result = "\n\\section{%s}\n\n"%("\n".join(cell["source"]))
+            else:
+                raise Exception("oops")
         else:
-            result += "\n\\begin{verbatim}\n"
-            result = "    UNKNOWN CELL "+repr(cell)
+            print "unknown cell:",repr(cell)
+            result = "\n\\begin{verbatim}\n"
+            result += "    UNKNOWN CELL\n"
+            result += "    "+cell["cell_type"]+"\n"
+            result += "    "+repr(cell)+"\n"
             result += "\n\\end{verbatim}\n"
+        results.append(result)
+    return results
+
+def convert_all_beamer(cells):
+    results = []
+    for cell in cells:
+        if cell["cell_type"]=="markdown":
+            content = convert_markdown_to_tex(cell).strip()
+            result = ""
+            if len(content)>10:
+                result = "\n\\begin{frame}[fragile]\n"
+                result += content
+                result += "\n\\end{frame}\n"
+        elif cell["cell_type"]=="code":
+            content = convert_code_to_tex(cell).strip()
+            result = ""
+            if len(content)>10:
+                result = "\n\\begin{frame}[fragile]\n"
+                result += content
+                result += "\n\\end{frame}\n"
+        elif cell["cell_type"]=="heading":
+            result = "\n\\begin{frame}[plain]\n"
+            result += "\\obeylines"
+            if cell["level"]>=2:
+                result += "{\Large %s}\n"%"\n".join(cell["source"])
+            else:
+                result += "{\Huge %s}\n"%"\n".join(cell["source"])
+            result += "\n\\end{frame}\n"
+        else:
+            print "unknown cell:",repr(cell)
+            result = "\n\\begin{frame}[fragile]\n"
+            result += "\n\\begin{verbatim}\n"
+            result += "    UNKNOWN CELL\n"
+            result += "    "+cell["cell_type"]+"\n"
+            result += "    "+repr(cell)+"\n"
+            result += "\n\\end{verbatim}\n"
+            result += "\n\\end{frame}\n"
         results.append(result)
     return results
 
 parser = argparse.ArgumentParser("apply an RNN recognizer")
 parser.add_argument("--noheader","-n",action="store_true")
-parser.add_argument("--output","-o","--output",default=None)
+parser.add_argument("--beamer","-b",action="store_true")
 parser.add_argument("--figs","-F",default="_figs")
 parser.add_argument("--prefix","-p",default=None)
-parser.add_argument("input",nargs=1)
+parser.add_argument("inputs",nargs="+")
 args = parser.parse_args()
-fname = args.input[0]
+beamer = args.beamer
 
-os.system("mkdir '%s' || true"%args.figs)
-
-if args.prefix is None:
-    s = re.sub(r"\.ipynb$","",fname)
-    s = re.sub(r'[^a-zA-Z0-9]+',"_",s)
-    args.prefix = s+"_"
-image_prefix = args.figs + "/" + args.prefix + "_"
-
-with open(fname) as stream: 
-    nb = json.load(stream)
-
-cells = nb["worksheets"][0]["cells"]
-results = convert_all(cells)
-stream = sys.stdout
-if args.output is not None: stream = open(args.output,"w")
-
-if not args.noheader: print tex_start
-for result in results: stream.write(result)
-if not args.noheader: print tex_end
-
-if stream!=sys.stdout: stream.close()
+for fname in args.inputs:
+    print "converting",fname
+    dname = os.path.normpath(os.path.dirname(fname))
+    prefix = args.prefix
+    if prefix is None:
+        s = re.sub(r"\.ipynb$","",fname)
+        s = re.sub(r'[^a-zA-Z0-9]+',"_",s)
+        prefix = s
+    image_dir = dname + "/" + args.figs
+    if not os.path.exists(image_dir): os.mkdir(image_dir)
+    image_prefix = image_dir + "/" + prefix + "_"
+    base,_ = os.path.splitext(fname)
+    title = base
+    author = ""
+    with open(fname) as stream: nb = json.load(stream)
+    cells = nb["worksheets"][0]["cells"]
+    if args.beamer:
+        results = convert_all_beamer(cells)
+        with open(base+"-slides.tex","w") as stream:
+            stream.write(beamer_start)
+            stream.write("\\title{%s}\n"%title)
+            stream.write("\\author{%s}\n"%author)
+            stream.write("\\maketitle\n")
+            for result in results: stream.write(result)
+            stream.write(beamer_end)
+    else:
+        results = convert_all(cells)
+        with open(base+".tex","w") as stream:
+            stream.write(tex_start)
+            stream.write("\\title{%s}\n"%title)
+            stream.write("\\author{%s}\n"%author)
+            stream.write("\\maketitle\n")
+            for result in results: stream.write(result)
+            stream.write(tex_end)
