@@ -1,5 +1,14 @@
 #!/usr/bin/python
 
+# simple markup rules:
+# both:
+# - $$...$$ becomes display equation
+# slide mode:
+# - empty line at beginning skips
+# - empty line at end combines with next slide
+# - (title) at the beginning of markdown becomes slide title
+# - "# title" at the beginning of code becomes slide title
+
 import markdown,re,base64,os,sys
 import simplejson as json
 import argparse
@@ -75,12 +84,12 @@ def convert_markdown_to_tex(cell):
     assert cell["cell_type"]=="markdown"
     source = cell["source"]
     source = [re.sub("\n$","",s) for s in source]
+    if source[0].strip()=="": return ""
     if source[0].strip().startswith("Title:"):
         global title,author
         _,title = re.split(r'\s+',source[0],1)
         _,author = re.split(r'\s+',source[1],1)
         return ""
-    if source[0].strip()=="": return ""
     m = re.match(r'^\s*\((.*)\)\s*$',source[0])
     if m: 
         ftitle = m.group(1)
@@ -130,18 +139,21 @@ def convert_code_to_tex(cell):
     result += code
     result += "\n\\end{lstlisting}\n\\par\n"
     result += "\\endgroup\n"
-    stdout = ["".join(s["text"]) for s in cell["outputs"] if s.get("stream")=="stdout"]
+    stdout = []
+    for c in cell["outputs"]:
+        if c.get("stream")=="stdout": stdout += c["text"]
+        elif c["output_type"]=="pyout": stdout += c["text"]
     stdout = "".join(stdout)
     stdout = re.split(r'\n',stdout)
     if len(stdout)>10:
-        stdout = stdout[:5]+"..."+stdout[-5:]
+        stdout = stdout[:5]+["..."]+stdout[-5:]
     stdout = "\n".join(stdout)
     result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
     result += "\n\\begin{verbatim}\n"
     result += stdout+"\n"
     result += "\n\\end{verbatim}\n"
     result += "\\endgroup\n"
-    pngs = [s for s in cell["outputs"] if s["output_type"]=="display_data"]
+    pngs = [s for s in cell["outputs"] if s.get("png") is not None]
     for j,out in enumerate(pngs):
         result += "\n\\begin{center}\n"
         result += "%% image %s_%d\n"%(cell["prompt_number"],j)
@@ -249,18 +261,20 @@ for fname in args.inputs:
     if args.beamer:
         results = convert_all_beamer(cells)
         with open(base+"-slides.tex","w") as stream:
-            stream.write(beamer_start)
-            stream.write("\\title{%s}\n"%title)
-            stream.write("\\author{%s}\n"%author)
-            stream.write("\\maketitle\n")
+            if not args.noheader: 
+                stream.write(beamer_start)
+                stream.write("\\title{%s}\n"%title)
+                stream.write("\\author{%s}\n"%author)
+                stream.write("\\maketitle\n")
             for result in results: stream.write(result)
-            stream.write(beamer_end)
+            if not args.noheader: stream.write(beamer_end)
     else:
         results = convert_all(cells)
         with open(base+".tex","w") as stream:
-            stream.write(tex_start)
-            stream.write("\\title{%s}\n"%title)
-            stream.write("\\author{%s}\n"%author)
-            stream.write("\\maketitle\n")
+            if not args.noheader: 
+                stream.write(tex_start)
+                stream.write("\\title{%s}\n"%title)
+                stream.write("\\author{%s}\n"%author)
+                stream.write("\\maketitle\n")
             for result in results: stream.write(result)
-            stream.write(tex_end)
+            if not args.noheader: stream.write(tex_end)
