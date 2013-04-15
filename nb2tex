@@ -8,11 +8,43 @@
 # - empty line at end combines with next slide
 # - (title) at the beginning of markdown becomes slide title
 # - "# title" at the beginning of code becomes slide title
+# code:
+# - lines starting with fig(, figs(, and Image( are deleted
+# - lines starting with #: in code are directives
+# - current directives are w: and h: for setting image widths and heights
 
-import markdown,re,base64,os,sys
+import markdown,re,base64,os,sys,codecs
 import simplejson as json
 import argparse
 from pylab import *
+
+th,tw = 2,4
+
+code_ignore = [
+    r"^fig\(",
+    r"^figs\(",
+    r"^figsize\(",
+    r"^Image\(",
+]
+
+def keep_code(s):
+    for r in code_ignore:
+        if re.search(r,s): return 0
+    return 1
+
+output_ignore = [
+    r"^\[?\<matplotlib.",
+    r"^\[?\<IPython.core."
+]
+
+def keep_output(s):
+    for r in output_ignore:
+        if re.search(r,s): return 0
+    return 1
+
+# globals
+beamer = 0
+imagecount = 0
 
 listings = r"""
 \usepackage{listings}
@@ -24,7 +56,7 @@ listings = r"""
 \definecolor{myviolet}{rgb}{0.6,0,0.6}
 \lstset{ %
 backgroundcolor=\color{mylight}, %
-basicstyle=\ttfamily\fontsize{8pt}{8pt}, %
+basicstyle=\ttfamily\scriptsize, %
 breakatwhitespace=false, %
 breaklines=true, %
 captionpos=b, %
@@ -54,8 +86,6 @@ tex_end = r"""
 \end{document}
 """
 
-beamer = 0
-
 beamer_start = r"""
 \documentclass{beamer}
 \usepackage{graphicx}"""+listings+r"""
@@ -77,18 +107,25 @@ def makelist(text):
     result += "\\end{itemize}\n"
     return result
 
-title = ""
-author = ""
+the_title = ""
+the_author = ""
+the_date = ""
+the_institution = ""
 
 def convert_markdown_to_tex(cell):
     assert cell["cell_type"]=="markdown"
     source = cell["source"]
     source = [re.sub("\n$","",s) for s in source]
+    if len(source)<1: return ""
     if source[0].strip()=="": return ""
     if source[0].strip().startswith("Title:"):
-        global title,author
-        _,title = re.split(r'\s+',source[0],1)
-        _,author = re.split(r'\s+',source[1],1)
+        global the_title,the_author,the_date,the_institution
+        for line in source:
+            key,value = re.split(r'\s+',line,1)
+            if key=="Title:": the_title = value
+            elif key=="Author:": the_author = value
+            elif key=="Date:": the_date = value
+            elif key=="Institution:": the_institution = value
         return ""
     m = re.match(r'^\s*\((.*)\)\s*$',source[0])
     if m: 
@@ -113,61 +150,74 @@ def convert_markdown_to_tex(cell):
         source[i] = re.sub(r'`(.*?)`',"\\\\verb|\\1|",source[i])
         source[i] = re.sub(r'"(.*?)"',"``\\1''",source[i])
     source = " ".join(source)
+    source = source.strip()+"\n"
+    if cell["source"][-1].strip()=="": source += "%continue\n"
     if beamer and ftitle is not None and ftitle!="":
-        return "\n\\frametitle{%s}\n%s\n"%(ftitle,source)
+        return "\n\\frametitle{%s}\n"%ftitle + source
     else:
-        return "\n%s\n"%(source,)
+        return source
 
 def convert_code_to_tex(cell):
+    global imagecount,th,tw
     assert cell["cell_type"]=="code"
     assert cell["language"]=="python"
     code = cell["input"]
     if len(code)<1: return ""
+    directives = [c for c in code if c.startswith("#:")]
+    for d in directives:
+        k,v = re.split(":\s*",d[2:],1)
+        if k=="w": tw = float(v)
+        elif k=="h": th = float(v)
     if code[0].strip()=="": return ""
-    m = re.match(r'^#\s*(.*)\s*$',code[0])
+    nocode = code[0].strip().startswith("##")
+    m = re.match(r'^#+\s*(.*)\s*$',code[0])
     if m: 
         ftitle = m.group(1)
         code = code[1:]
     else:
         ftitle = None
     code = [re.sub("\n","",c) for c in code]
+    code = [c for c in code if not c.startswith("#:")]
+    code = [s for s in code if keep_code(s)]
     code = "\n".join(code)
     result = "\n"
     if ftitle is not None and beamer: result += "\\frametitle{%s}\n"%(ftitle,)
-    result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
-    result += "\n\\par\\vskip1ex\n\\begin{lstlisting}\n"
-    result += code
-    result += "\n\\end{lstlisting}\n\\par\n"
-    result += "\\endgroup\n"
+    if not nocode and len(code)>0:
+        result += "\n\\par\\vskip1ex\n\\begin{lstlisting}\n"
+        result += code
+        result += "\n\\end{lstlisting}\n\\par\n"
     stdout = []
     for c in cell["outputs"]:
         if c.get("stream")=="stdout": stdout += c["text"]
         elif c["output_type"]=="pyout": stdout += c["text"]
     stdout = "".join(stdout)
     stdout = re.split(r'\n',stdout)
+    stdout = [s for s in stdout if keep_output(s)]
     if len(stdout)>10:
         stdout = stdout[:5]+["..."]+stdout[-5:]
     stdout = "\n".join(stdout)
-    result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
-    result += "\n\\begin{verbatim}\n"
-    result += stdout+"\n"
-    result += "\n\\end{verbatim}\n"
-    result += "\\endgroup\n"
+    if stdout.strip()!="":
+        result += "\\begingroup\\fontsize{8pt}{8pt}\\selectfont\n"
+        result += "\n\\begin{verbatim}\n"
+        result += stdout+"\n"
+        result += "\n\\end{verbatim}\n"
+        result += "\\endgroup\n"
     pngs = [s for s in cell["outputs"] if s.get("png") is not None]
-    for j,out in enumerate(pngs):
+    for out in pngs:
         result += "\n\\begin{center}\n"
-        result += "%% image %s_%d\n"%(cell["prompt_number"],j)
         png = base64.standard_b64decode(out["png"])
-        png_name = image_prefix+"%03d_%02d.png"%(int(cell["prompt_number"]),int(j))
+        png_name = image_prefix+"%03d.png"%(imagecount,)
+        imagecount += 1
         with open(png_name,"wb") as stream: stream.write(png)
         image = imread(png_name)
         h,w = image.shape[:2]
-        th,tw = 1.5,4.0
         if h/th>w/tw:
-            result += "    \\includegraphics[height=%fin]{%s}\n"%(th,png_name)
+            result += "    \\includegraphics[height=%.2fin]{%s}\n"%(th,png_name)
         else:
-            result += "    \\includegraphics[width=%fin]{%s}\n"%(tw,png_name)
+            result += "    \\includegraphics[width=%.2fin]{%s}\n"%(tw,png_name)
         result += "\\end{center}\n"
+    result = result.strip()+"\n"
+    if cell["input"][-1].strip()=="": result += "%continue\n"
     return result
 
 def convert_all(cells):
@@ -198,22 +248,16 @@ def convert_all(cells):
 
 def convert_all_beamer(cells):
     results = []
+    i = 0
+    output = ""
+    # NB: we use "\n\n" at the end of cells and output
+    # that the current frame hasn't been closed and that
+    # there should be more added to it.
     for cell in cells:
-        if cell["cell_type"]=="markdown":
-            content = convert_markdown_to_tex(cell).strip()
-            result = ""
-            if len(content)>10:
-                result = "\n\\begin{frame}[fragile]\n"
-                result += content
-                result += "\n\\end{frame}\n"
-        elif cell["cell_type"]=="code":
-            content = convert_code_to_tex(cell).strip()
-            result = ""
-            if len(content)>10:
-                result = "\n\\begin{frame}[fragile]\n"
-                result += content
-                result += "\n\\end{frame}\n"
-        elif cell["cell_type"]=="heading":
+        ctype = cell["cell_type"]
+        if ctype in ["heading"]:
+            if output.endswith("%continue\n"):
+                output += "\\end{frame}\n"
             result = "\n\\begin{frame}[plain]\n"
             result += "\\obeylines"
             if cell["level"]>=2:
@@ -221,17 +265,35 @@ def convert_all_beamer(cells):
             else:
                 result += "{\Huge %s}\n"%"\n".join(cell["source"])
             result += "\n\\end{frame}\n"
+            output += result
+            continue
+
+        if ctype in ["markdown"]:
+            content = convert_markdown_to_tex(cell)
+        elif ctype in ["code"]:
+            content = convert_code_to_tex(cell)
         else:
-            print "unknown cell:",repr(cell)
-            result = "\n\\begin{frame}[fragile]\n"
-            result += "\n\\begin{verbatim}\n"
-            result += "    UNKNOWN CELL\n"
-            result += "    "+cell["cell_type"]+"\n"
-            result += "    "+repr(cell)+"\n"
-            result += "\n\\end{verbatim}\n"
-            result += "\n\\end{frame}\n"
-        results.append(result)
-    return results
+            print ctype,repr(cell)
+            content = "\\begin{verbatim}\n%s\n\\end{verbatim}\n"%repr(cell)
+        if content.strip()=="": 
+            continue
+
+        if not output.endswith("%continue\n"):
+            output += "\n\\begin{frame}[fragile]\n"
+        output += content
+        if not output.endswith("%continue\n"):
+            output += "\n\\end{frame}\n"
+
+        if 0:
+            print "===",ctype
+            print repr(cell.get("source"))
+            print repr(cell.get("input"))
+            print repr(content)
+            print repr(output[-10:])
+            print
+    if output.endswith("%continue\n"):
+        output += "\n\\end{frame}\n"
+    return output
 
 parser = argparse.ArgumentParser("apply an RNN recognizer")
 parser.add_argument("--noheader","-n",action="store_true")
@@ -243,6 +305,7 @@ args = parser.parse_args()
 beamer = args.beamer
 
 for fname in args.inputs:
+    imagecount = 0
     print "converting",fname
     dname = os.path.normpath(os.path.dirname(fname))
     prefix = args.prefix
@@ -260,21 +323,24 @@ for fname in args.inputs:
     cells = nb["worksheets"][0]["cells"]
     if args.beamer:
         results = convert_all_beamer(cells)
-        with open(base+"-slides.tex","w") as stream:
+        with codecs.open(base+"-slides.tex","w","utf-8") as stream:
             if not args.noheader: 
                 stream.write(beamer_start)
-                stream.write("\\title{%s}\n"%title)
-                stream.write("\\author{%s}\n"%author)
+                stream.write("\\title{%s}\n"%the_title)
+                stream.write("\\author{%s}\n"%the_author)
+                stream.write("\\date{%s}\n"%the_date)
+                stream.write("\\institute{%s}\n"%the_institution)
                 stream.write("\\maketitle\n")
             for result in results: stream.write(result)
             if not args.noheader: stream.write(beamer_end)
     else:
         results = convert_all(cells)
-        with open(base+".tex","w") as stream:
+        with codecs.open(base+".tex","w","utf-8") as stream:
             if not args.noheader: 
                 stream.write(tex_start)
-                stream.write("\\title{%s}\n"%title)
-                stream.write("\\author{%s}\n"%author)
+                stream.write("\\title{%s}\n"%the_title)
+                stream.write("\\author{%s}\n"%the_author)
+                stream.write("\\date{%s}\n"%the_date)
                 stream.write("\\maketitle\n")
             for result in results: stream.write(result)
             if not args.noheader: stream.write(tex_end)
