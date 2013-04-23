@@ -143,16 +143,30 @@ def convert_markdown_to_tex(cell):
     source = re.sub(r"(.*)\n+----*","\\subsection{\\1}\n",source)
     # paragraphs
     source = re.sub(r"\n\n+","\n\\par\n",source)
-    source = re.split(r"(\$\$[^$]+?\$\$|\$[^$]+?\$|\\begin{equation}.*?\\end{equation})(?s)",source)
+    source = re.split(r"(\$\$[^$]+?\$\$|\$[^$]+?\$|\\begin{equation}.*?\\end{equation}|\\begin{eqnarray}.*?\\end{eqnarray}|\\\[.*?\\\])(?s)",source)
     for i in range(0,len(source),2):
+        # get rid of HTML tags (brute force for now)
+        source[i] = re.sub(r"<[^>]*?>","",source[i])
+        # bold
         source[i] = re.sub(r"\*(.*?)\*","{\\\\bf \\1}",source[i])
+        # italic
         source[i] = re.sub(r"_(.*?)_","{\\\\it \\1}",source[i])
+        # verbatim
         source[i] = re.sub(r'`(.*?)`',"\\\\verb|\\1|",source[i])
+        # quoting
         source[i] = re.sub(r'"(.*?)"',"``\\1''",source[i])
+        # links
+        source[i] = re.sub(r'!\[(.*?)\]\((.*?)\)',r"\\href{\2}{\1 (Image)}",source[i])
+        # links
+        source[i] = re.sub(r'\[(.*?)\]\((.*?)\)',r"\\href{\2}{\1}",source[i])
     source = " ".join(source)
     source = source.strip()+"\n"
     if cell["source"][-1].strip()=="": source += "%continue\n"
-    if beamer and ftitle is not None and ftitle!="":
+    if not beamer and ftitle in ["margin","aside"]:
+        return "\n\\marginpar{\n%s\n}\n"%source
+    elif not beamer and ftitle in ["box","question"]:
+        return "\n\\fbox{\n%s\n}\n"%source
+    elif beamer and ftitle is not None and ftitle!="":
         return "\n\\frametitle{%s}\n"%ftitle + source
     else:
         return source
